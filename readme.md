@@ -8,4 +8,4 @@ Although there's no user interface, this is just a normal plugin.  Install it in
 
 ## Usage
 
-The only way to interact with this plugin is through code.  It has lots of hooks, which in some cases are required to get it to function.
+The only way to interact with this plugin is through code, it has no UI.  Before you can record any data, you have to tell Kissmetrics what your API key is.  You can do this either through the `kissmetrics_api_key` filter or the `WP_KISSMETRICS_API_KEY` constant.  Filters will override the constant if you use both.  The same API key constant and filter applies to queries from both PHP and JavaScript.
