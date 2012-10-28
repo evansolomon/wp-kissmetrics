@@ -11,156 +11,303 @@ License: GPL v2 or later
 /* Based on https://github.com/kissmetrics/KISSmetrics/blob/master/km.php */
 
 class WP_Kissmetrics {
-	protected $id;
-	protected $key;
-	protected $time;
+	// Query requirements
+	static $id                 = null;
+	static $key                = null;
+	static $time               = null;
+
+	// Batched queries
+	static $queued_queries     = array();
+	static $js_queries         = array();
+
+	// Human-friendly query type names
+	static $query_type_mapping = array(
+		'record' => 'e', // Record events
+		'set'    => 's', // Set properties
+		'alias'  => 'a', // Alias user Id's
+	);
 
 	/**
-	 * Takes two optional arguments: API key and timestamp
+	 * Setup Kissmetrics API key and timestamp for the data to be recorded
+	 * Uses 'kissmetrics_api_key' fitler
 	 *
-	 * API Key argument is inteded to be filtered using the 'kissmetrics_key' filter
-	 * Optional time argument defaults to current time
-	 *
-	 * This is required before doing anything else
+	 * This is required before making any queries
 	 */
-	function init( $key = null, $time = null ) {
-		if ( ! apply_filters( 'kissmetrics_init', true ) )
-			return $this->is_initialized();
+	static function init( $key = null, $time = null ) {
+		// Make sure Kissmetrics has not been disabled
+		if ( ! self::is_enabled() )
+			return;
 
-		$this->key  = apply_filters( 'kissmetrics_key', $key );
-		$this->time = ( is_int( $time ) ) ? $time : time();
-
-		return $this->is_initialized();
+		self::$key  = apply_filters( 'kissmetrics_api_key', $key );
+		self::$time = ( is_int( $time ) ) ? $time : time();
 	}
 
 	/**
-	 * Identify the user we're going to record data about
-	 * This is required before recording any data
+	 * Identify the user we to record data about
+	 * This is required before recording events or properties
 	 *
-	 * identify( get_current_user_id() );
+	 * On WordPress.com we use usernames for identifiers
+	 * If you pass an email or user_id it will get automatically converted to a username
 	 */
-	function identify( $id ) {
+	static function identify( $id ) {
 		if ( ! $id )
-			return $this->is_identified();
+			return;
+		elseif ( is_int( $id ) )
+			$id = get_user_by( 'id', $id )->user_login;
+		elseif ( is_email( $id ) )
+			$id = get_user_by( 'email', $id )->user_login;
 
-		$this->id = apply_filters( 'kissmetrics_identify', $id );
+		self::$id = $id;
+	}
 
-		/* Use the Kissmetrics auto-generated ID cookie to alias our logged in ID, then delete the cookie */
-		if ( isset( $_COOKIE['km_ai'] ) && ! headers_sent() && apply_filters( 'kissmetrics_auto_alias', true ) ) {
-			$this->alias( $_COOKIE['km_ai'], $this->id );
-			setcookie( 'km_ai', '', time() - 3600 );
-		}
 
-		return $this->is_identified();
+	/**
+	 * Centralize some common tasks in helper functions
+	 */
+	static function init_and_identify( $api_key, $identity ) {
+		if ( ! $api_key )
+			$api_key = self::get_default_api_key();
+
+		self::init( $api_key );
+		self::identify( $identity );
 	}
 
 	/**
-	 * Record data about an identified user
-	 * Accepts a required argument 'event' as a string
-	 * Accepts an optional argument 'properties' as an array
+	 * Record an event for the identified user
 	 *
-	 * Example: record( 'Viewed Homepage', array( 'campaign' => 'Adwords') );
+	 * $action Unique name for the event being recorded
+	 * $properties Metadata about the event being recorded, default empty
+	 * $prefix_properties Whether or not to prefix property names with event name,
+	 *   default true to avoid conflicting property names
 	 */
-	function record( $event, $properties = array() ) {
-		if ( ! $this->is_initialized_and_identified() )
-			return false;
+	static function record( $action, $props = array(), $prefix_properties = true ) {
+		if ( ! self::is_initialized_and_identified() )
+			return;
 
-		$args = array_merge( $properties, array(
-			'_n' => $event,
-		) );
-		$args = (array) apply_filters( 'kissmetrics_record', $args );
+		if ( $prefix_properties )
+			$props = self::prefix_properties( $props, $action );
 
-		return $this->generate_query( 'e', $args );
+		// _n is the Kissmetrics API property for event name
+		$data = array_merge( $props, array( '_n' => $action ) );
+
+		self::generate_query( self::$query_type_mapping['record'], $data );
 	}
 
 	/**
-	 * Set properties about an identified user
-	 * Accepts a single argument 'properties' as an array
+	 * Set properties about the identified user
 	 *
-	 * Example: set( array( 'language' => 'en', 'favorite_bbq' => 'brisket' ) );
+	 * $properties Array of properties and values with named indices
 	 */
-	function set( $properties = array() ) {
-		if ( ! $this->is_initialized_and_identified() )
-			return false;
+	static function set( $properties = array() ) {
+		if ( ! self::is_initialized_and_identified() )
+			return;
 
-		$args = (array) apply_filters( 'kissmetrics_set', $args );
+		if ( ! $properties || ! is_array( $properties ) )
+			return;
 
-		return $this->generate_query( 's', $properties );
+		// Arrays should not be 0-indexed because indices are used as property names
+		if ( array_key_exists( 0, $properties ) )
+			return;
+
+		self::generate_query( self::$query_type_mapping['set'], $properties );
 	}
 
 	/**
-	 * Alias a new user identiy to a new one in Kissmetrics' data
-	 * Possible use case would be assigning logged out user an identifier and aliasing their User ID after signup
+	 * Alias a new user identiy to another, combines both users' data in Kissmetrics
 	 *
-	 * Example: alias( get_current_user_id(), $_COOKIE['tmp_km_thing'] );
+	 * Argument order does not matter
 	 */
-	function alias( $name, $alias_to ) {
-		if ( ! $this->is_initialized() )
-			return false;
+	static function alias( $name, $alias_to ) {
+		if ( $name == $alias_to )
+			return;
 
-		$args = array(
+		if ( ! self::is_initialized() )
+			return;
+
+		$array = array(
 			'_p' => $name,
 			'_n' => $alias_to,
 		);
-		$args = (array) apply_filters( 'kissmetrics_alias', $args );
 
-		return $this->generate_query( 'a', $args, false );
+		self::generate_query( self::$query_type_mapping['alias'], $array, false );
 	}
 
 	/**
-	 * Undo any initialization or identification
+	 * Register JS API
 	 */
-	function reset() {
-		$this->id  = null;
-		$this->key = null;
-
-		return ! $this->id && ! $this->key;
+	static function register_js() {
+		wp_register_script( 'kissmetrics', plugins_url( '/kissmetrics.js', __FILE__ ), array( 'jquery' ), '20120929', true );
 	}
 
-	/* Protected */
+	/**
+	 * Enqueue JavaScript API
+	 */
+	static function enqueue_js() {
+		if ( ! self::is_enabled() )
+			return;
 
-	/* Check to make sure both the API key and User ID are set */
-	protected function is_initialized_and_identified() {
-		return $this->is_initialized() && $this->is_identified();
+		self::register_js();
+		wp_enqueue_script( 'kissmetrics' );
+		self::setup_js_api();
 	}
 
-	protected function is_initialized() {
-		return (bool) $this->key;
+	/**
+	 * Pass API key and username to Kissmetrics
+	 */
+	static protected function setup_js_api() {
+		static $api_setup;
+
+		// Only do this once per page load
+		if ( $api_setup )
+			return;
+
+		$api_setup = array();
+		$api_setup['api_key'] = self::get_default_api_key();
+
+		if ( is_user_logged_in() )
+			$api_setup['username'] = get_user_by( 'id', get_current_user_id() )->user_login;
+
+		wp_localize_script( 'kissmetrics', 'kissmetrics', $api_setup );
 	}
 
-	protected function is_identified() {
-		return (bool) $this->id;
+	/**
+	 * Pass an event and optional properties to be recorded client side
+	 */
+	static function record_js_event( $event, $properties = array() ) {
+		self::$js_queries['events'][] = array( 'name' => $event, 'properties' => $properties );
+		self::setup_js_queries();
 	}
 
-	/* Put together the query we're going to send to Kissmetrics */
-	protected function generate_query( $type, $data, $update = true ) {
-		// Setup query params
-		if( $update )
-			$data['_p'] = $this->id;   // User ID
-
-		$data['_k']   = $this->key;  // API key
-		$data['_t']   = $this->time; // Timestamp
-		$data['_d']   = 1;           // Force Kissmetrics to use our timestamp
-
-		$data         = apply_filters( 'kissmetrics_generate_query_args', $data );
-
-		$query = '/' . $type . '?' . http_build_query( $data, '', '&', PHP_QUERY_RFC3986 );
-		$query = apply_filters( 'kissmetrics_generate_query_string', $query );
-
-		return $this->send_query( $query );
+	/**
+	 * Pass a single property to be recorded client side
+	 */
+	static function set_js_property( $property ) {
+		self::$js_queries['properties'][] = $property;
+		self::setup_js_queries();
 	}
 
-	/* Actually send Kissmetrics some data */
-	protected function send_query( $query ) {
-		$host = apply_filters( 'kissmetrics_host', 'http://trk.kissmetrics.com:80' );
-		$endpoint = $host . $query;
+	/**
+	 * Add actions to print JS data
+	 */
+	static protected function setup_js_queries() {
+		// Early priority to get in before the scripts are printed
+		add_action( 'wp_print_footer_scripts',    array( __CLASS__, 'print_js_queries' ), 9 );
+		add_action( 'admin_print_footer_scripts', array( __CLASS__, 'print_js_queries' ), 9 );
+	}
 
-		$args = array( 'blocking' => false );
-		$args = apply_filters( 'kissmetrics_send_query_args', $args );
+	/**
+	 * Print the data to be used by kissmetrics.js
+	 * Assumes kissmetrics.js is enqueued in the footer, which it is by default
+	 */
+	static function print_js_queries() {
+		foreach ( self::$js_queries as $type => $queries )
+			wp_localize_script( 'kissmetrics', "kissmetrics_{$type}", $queries );
+	}
 
-		return wp_remote_get( $endpoint, $args );
+	/**
+	 * Used to avoid conflicting like-named properties of different events
+	 */
+	static function prefix_properties( $props = array(), $prefix = '' ) {
+		foreach ( $props as $key => $value ) {
+			unset( $props[ $key ] );
+			$props["{$prefix} | {$key}"] = $value;
+		}
+
+		return $props;
+	}
+
+	/**
+	 * Centralize dealing with the constant in a single place
+	 */
+	static protected function get_default_api_key() {
+		$api_key = ( defined( 'WP_KISSMETRICS_API_KEY' ) ) ? WP_KISSMETRICS_API_KEY : null;
+
+		return apply_filters( 'kissmetrics_api_key', $api_key );
+	}
+
+	/**
+	 * Allow filters to turn Kissmetrics on or off
+	 */
+	static protected function is_enabled() {
+		return apply_filters( 'kissmetrics_is_enabled', true );
+	}
+
+	/**
+	 * Clear API key and identity
+	 * Runs automatically after each query
+	 */
+	static protected function reset() {
+		self::$id  = null;
+		self::$key = null;
+	}
+
+	/**
+	 * Check to make sure both the API key and User ID are set, boolean
+	 */
+	static protected function is_initialized_and_identified() {
+		return self::is_initialized() && self::$id;
+	}
+
+	/**
+	 * Check that an API key is set, boolean
+	 */
+	static protected function is_initialized() {
+		return (bool) self::$key;
+	}
+
+	/**
+	 * Create the query string we're going to use to request the Kissmetrics API
+	 */
+	static protected function generate_query( $type, $data ) {
+
+		$data['_k'] = self::$key;  // API key
+		$data['_t'] = self::$time; // Timestamp
+		$data['_d'] = 1;           // Force Kissmetrics to use the time value we pass
+		$data['_p'] = self::$id;   // User identity
+
+		$query = '/' . $type . '?' . http_build_query( $data, '', '&' );
+
+		// Encode spaces as %20 instead of +
+		// PHP 5.4 supports a fourth argument (enc_type) to do this more gracefully
+		// See: http://php.net/manual/en/function.http-build-query.php
+		$query = str_replace( '+', '%20', $query );
+
+		self::queue_query( $query );
+		self::reset();
+		do_action( 'kissmetrics_generate_query', array_search( $type, self::$query_type_mapping ), $data );
+	}
+
+	/**
+	 * Add the query to a queue and set the queue to be processed on shutdown
+	 */
+	static protected function queue_query( $query ) {
+		self::$queued_queries[] = $query;
+		add_action( 'shutdown', array( __CLASS__, 'send_queued_queries' ) );
+	}
+
+	/**
+	 * Process the queued queries
+	 */
+	static function send_queued_queries() {
+		foreach ( (array) self::$queued_queries as $query )
+			self::send_query( $query );
+
+		// Kill the queue after its processed in case this gets called multiple times
+		self::$queued_queries = array();
+	}
+
+	/**
+	 * Make an HTTP request to the Kissmetrics API
+	 */
+	static protected function send_query( $query ) {
+		$request_url = 'http://trk.kissmetrics.com:80' . $query;
+		wp_remote_get( $request_url, array(
+			'timeout'  => 1,
+		) );
 	}
 }
 
-$wp_kissmetrics = new WP_Kissmetrics;
+// Load the helper functions
 require_once( dirname( __FILE__ ) . '/helpers.php' );
+
+do_action( 'wp_kissmetrics_loaded' );
