@@ -1,6 +1,6 @@
 <?php
 
-/* Just a couple of simple helper functions to record basic data */
+/* Just a couple of simple helper functions to record data */
 
 /**
  * Helper function: Record events
