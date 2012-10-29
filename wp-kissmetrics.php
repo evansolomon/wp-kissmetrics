@@ -136,7 +136,7 @@ class WP_Kissmetrics {
 	 * Register JS API
 	 */
 	static function register_js() {
-		wp_register_script( 'kissmetrics', plugins_url( '/kissmetrics.js', __FILE__ ), array( 'jquery' ), '20120929', true );
+		wp_register_script( 'kissmetrics', plugins_url( '/kissmetrics.js', __FILE__ ), array( 'jquery' ), '20121028', true );
 	}
 
 	/**
@@ -167,7 +167,7 @@ class WP_Kissmetrics {
 		if ( is_user_logged_in() )
 			$api_setup['username'] = get_user_by( 'id', get_current_user_id() )->user_login;
 
-		wp_localize_script( 'kissmetrics', 'kissmetrics', $api_setup );
+		wp_localize_script( 'kissmetrics', 'kissmetrics_api', $api_setup );
 	}
 
 	/**
@@ -200,8 +200,7 @@ class WP_Kissmetrics {
 	 * Assumes kissmetrics.js is enqueued in the footer, which it is by default
 	 */
 	static function print_js_queries() {
-		foreach ( self::$js_queries as $type => $queries )
-			wp_localize_script( 'kissmetrics', "kissmetrics_{$type}", $queries );
+		wp_localize_script( 'kissmetrics', 'kissmetrics_queries', self::$js_queries );
 	}
 
 	/**
@@ -220,7 +219,7 @@ class WP_Kissmetrics {
 	 * Centralize dealing with the constant in a single place
 	 */
 	static protected function get_default_api_key() {
-		$api_key = ( defined( 'WP_KISSMETRICS_API_KEY' ) ) ? WP_KISSMETRICS_API_KEY : null;
+		$api_key = ( defined( 'WPCOM_KISSMETRICS_API_KEY' ) ) ? WPCOM_KISSMETRICS_API_KEY : null;
 
 		return apply_filters( 'kissmetrics_api_key', $api_key );
 	}
@@ -306,8 +305,3 @@ class WP_Kissmetrics {
 		) );
 	}
 }
-
-// Load the helper functions
-require_once( dirname( __FILE__ ) . '/helpers.php' );
-
-do_action( 'wp_kissmetrics_loaded' );

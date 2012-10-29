@@ -43,9 +43,10 @@ function _kms(u){
 
 		// Handles API setup and events/properties in the DOM on ready
 		init: function() {
-			var kissmetrics = window.kissmetrics || {},
-				events = window.kissmetrics_events || {},
-				properties = window.kissmetrics_properties || {};
+			var kissmetrics = window.kissmetrics_api || {},
+				queries = window.kissmetrics_queries || {},
+				events = queries.events || {},
+				properties = queries.properties || {};
 
 			// Remaining functions use data populated by kissmetrics_js() in PHP
 
