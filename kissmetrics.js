@@ -1,5 +1,5 @@
-// Make sure the 'wp' global object exists
-window.wp = window.wp || {};
+// Make sure the 'kissmetrics' global object exists
+window.kissmetrics = window.kissmetrics || {};
 
 // From Kissmetrics' default JS
 var _kmq = _kmq || [];
@@ -19,7 +19,7 @@ function _kms(u){
 
 // Helper functions
 (function($){
-	wp.kissmetrics = {
+	kissmetrics = {
 		// name should be a string
 		// e.g. 'Clicked signup button'
 		// properties should be an array of key/value pair objects
@@ -63,16 +63,16 @@ function _kms(u){
 
 			// Record arbitrary events
 			$.each( events, function() {
-				wp.kissmetrics.recordEvent( this.name, this.properties );
+				kissmetrics.recordEvent( this.name, this.properties );
 			});
 
 			// Set arbitrary properties
 			$.each( properties, function() {
-				wp.kissmetrics.setProperty( this );
+				kissmetrics.setProperty( this );
 			});
 		}
 	};
 
 	// Bind init to $(document).ready()
-	$( wp.kissmetrics.init );
+	$( kissmetrics.init );
 }(jQuery));
