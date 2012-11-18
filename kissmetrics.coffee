@@ -1,5 +1,5 @@
 # Fallback for Kissmetrics global
-window._kmq = window._kmq || []
+window._kmq ?= []
 
 # Helper functions
 ( ( $, global ) ->
